@@ -29,49 +29,50 @@ jobs:
     - name: 🚀 Deploy to EC2
       run: |
         echo "🚀 Starting deployment to EC2..."
-        ssh -v -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null ubuntu@${{ secrets.EC2_HOST }} '
-          echo "✅ SSH connection successful!"
+        ssh -v -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null ubuntu@${{ secrets.EC2_HOST }} "
+          echo '✅ SSH connection successful!'
           
           # 檢查項目目錄是否存在
-          if [ -d "/home/ubuntu/wisdom-video" ]; then
-            echo "📁 Found existing project directory"
-            PROJECT_DIR="/home/ubuntu/wisdom-video"
+          if [ -d '/home/ubuntu/wisdom-video' ]; then
+            echo '📁 Found existing project directory'
+            PROJECT_DIR='/home/ubuntu/wisdom-video'
           else
-            echo "🔍 Project directory not found, cloning repository..."
+            echo '🔍 Project directory not found, cloning repository...'
             cd /home/ubuntu
-            git clone https://github.com/${{ github.repository }}.git wisdom-video || { echo "❌ Git clone failed"; exit 1; }
-            PROJECT_DIR="/home/ubuntu/wisdom-video"
-            echo "✅ Repository cloned successfully"
+            git clone https://github.com/${{ github.repository }}.git wisdom-video || { echo '❌ Git clone failed'; exit 1; }
+            PROJECT_DIR='/home/ubuntu/wisdom-video'
+            echo '✅ Repository cloned successfully'
           fi
           
-          echo "📁 Using project directory: $PROJECT_DIR"
-          cd "$PROJECT_DIR" || { echo "❌ Cannot access directory: $PROJECT_DIR"; exit 1; }
-          echo "📁 Current directory: $(pwd)"
+          echo '📁 Using project directory: '\$PROJECT_DIR
+          cd \"\$PROJECT_DIR\" || { echo '❌ Cannot access directory: '\$PROJECT_DIR; exit 1; }
+          echo '📁 Current directory: '\$(pwd)
           
-          echo "🔄 Pulling latest changes..."
-          git pull origin main || { echo "❌ Git pull failed"; exit 1; }
+          echo '🔄 Pulling latest changes...'
+          git pull origin main || { echo '❌ Git pull failed'; exit 1; }
           
-          echo "⚙️  Creating .env file..."
-          cat > .env << EOF
-# AI 智慧課程影片生成系統環境變數
-ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-your-api-key-here}
-WHISPER_MODEL=base
-OCR_LANGUAGES=ch_tra,en
-VIDEO_FPS=25
-EOF
-          echo "✅ .env file created successfully"
+          echo '⚙️ Creating .env file...'
+          echo '# AI 智慧課程影片生成系統環境變數' > .env
+          echo 'ANTHROPIC_API_KEY='\${ANTHROPIC_API_KEY:-your-api-key-here} >> .env
+          echo 'WHISPER_MODEL=base' >> .env
+          echo 'OCR_LANGUAGES=ch_tra,en' >> .env
+          echo 'VIDEO_FPS=25' >> .env
           
-          if git diff --name-only HEAD~1 HEAD | grep -E "(Dockerfile|docker-compose.yml|requirements.txt)"; then
-            echo "🔄 Rebuilding Docker images..."
-            docker-compose build --no-cache || { echo "❌ Docker build failed"; exit 1; }
+          echo '✅ .env file created successfully'
+          echo '📋 .env file contents:'
+          cat .env
+          
+          if git diff --name-only HEAD~1 HEAD | grep -E '(Dockerfile|docker-compose.yml|requirements.txt)'; then
+            echo '🔄 Rebuilding Docker images...'
+            docker-compose build --no-cache || { echo '❌ Docker build failed'; exit 1; }
           else
-            echo "ℹ️  No rebuild needed"
+            echo 'ℹ️  No rebuild needed'
           fi
           
-          echo "🐳 Starting services..."
-          docker-compose up -d || { echo "❌ Docker compose up failed"; exit 1; }
-          echo "✅ Deployment completed!"
-        '
+          echo '🐳 Starting services...'
+          docker-compose up -d || { echo '❌ Docker compose up failed'; exit 1; }
+          echo '✅ Deployment completed!'
+        "
       env:
         ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         
