@@ -96,6 +96,9 @@ jobs:
           sleep 5
           docker-compose ps
           
+          echo '📋 Showing recent application logs...'
+          docker-compose logs --tail=50 wisdom-video || echo 'ℹ️  No logs available yet'
+          
           echo '✅ Deployment completed!'
         "
       env:
