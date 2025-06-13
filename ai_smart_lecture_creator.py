@@ -11,6 +11,9 @@ import easyocr
 import anthropic
 import json
 import os
+import gc
+import time
+import psutil
 from pathlib import Path
 from moviepy import (
     ImageClip, AudioFileClip, CompositeVideoClip
@@ -33,6 +36,15 @@ class AILectureCreator:
         # 從環境變量讀取設定
         self.fps = int(os.getenv('VIDEO_FPS', '25'))
         
+        # 記憶體監控
+        self.memory_limit_gb = float(os.getenv('MEMORY_LIMIT_GB', '2.0'))  # 預設 2GB 記憶體限制
+        
+        # OCR 批處理設定
+        self.batch_size = int(os.getenv('OCR_BATCH_SIZE', '1'))  # 一次處理一張圖片
+        
+        # 進度保存路徑
+        self.progress_file = Path("ocr_progress.json")
+        
         # 初始化 Whisper 和 OCR
         print("🔧 初始化 AI 模組...")
         
@@ -41,8 +53,10 @@ class AILectureCreator:
         ocr_languages = os.getenv('OCR_LANGUAGES', 'ch_tra,en')
         ocr_languages = ocr_languages.split(',') if isinstance(ocr_languages, str) else list(ocr_languages)
         
+        # 延遲初始化 OCR，避免預先佔用記憶體
         self.whisper_model = whisper.load_model(whisper_model_name)
-        self.ocr_reader = easyocr.Reader(ocr_languages)  # 支援中文和英文
+        self.ocr_reader = None  # 延遲初始化
+        self.ocr_languages = ocr_languages
         
         # Claude (Anthropic) API 設定
         self.claude_client = None
@@ -54,9 +68,77 @@ class AILectureCreator:
             print("   ⚠️ 未設定有效的 ANTHROPIC_API_KEY，將使用本地匹配算法")
             print("   💡 請在 .env 檔案設定你的 Anthropic API Key")
     
+    def check_memory_usage(self):
+        """檢查記憶體使用情況"""
+        memory_info = psutil.virtual_memory()
+        used_gb = memory_info.used / (1024**3)
+        available_gb = memory_info.available / (1024**3)
+        
+        print(f"   📊 記憶體使用: {used_gb:.1f}GB / {memory_info.total/(1024**3):.1f}GB (可用: {available_gb:.1f}GB)")
+        
+        if available_gb < 0.5:  # 少於 0.5GB 可用記憶體
+            print("   ⚠️ 記憶體不足，執行垃圾回收...")
+            gc.collect()
+            time.sleep(1)
+            
+            # 再次檢查
+            memory_info = psutil.virtual_memory()
+            available_gb = memory_info.available / (1024**3)
+            if available_gb < 0.3:  # 還是不夠
+                raise MemoryError(f"記憶體不足！可用記憶體: {available_gb:.1f}GB")
+    
+    def init_ocr_reader(self):
+        """延遲初始化 OCR 讀取器"""
+        if self.ocr_reader is None:
+            print("   🔍 初始化 OCR 讀取器...")
+            self.check_memory_usage()
+            self.ocr_reader = easyocr.Reader(self.ocr_languages, gpu=False)  # 強制使用 CPU
+            print("   ✅ OCR 讀取器初始化完成")
+    
+    def save_ocr_progress(self, processed_slides):
+        """保存 OCR 進度"""
+        progress_data = {
+            'timestamp': datetime.now().isoformat(),
+            'processed_count': len(processed_slides),
+            'slides': []
+        }
+        
+        for slide in processed_slides:
+            # 轉換 Path 對象為字串以便 JSON 序列化
+            slide_data = slide.copy()
+            slide_data['slide_path'] = str(slide_data['slide_path'])
+            progress_data['slides'].append(slide_data)
+        
+        with open(self.progress_file, 'w', encoding='utf-8') as f:
+            json.dump(progress_data, f, ensure_ascii=False, indent=2)
+    
+    def load_ocr_progress(self):
+        """載入已保存的 OCR 進度"""
+        if not self.progress_file.exists():
+            return []
+        
+        try:
+            with open(self.progress_file, 'r', encoding='utf-8') as f:
+                progress_data = json.load(f)
+            
+            # 轉換回 Path 對象
+            slides = []
+            for slide in progress_data.get('slides', []):
+                slide['slide_path'] = Path(slide['slide_path'])
+                slides.append(slide)
+            
+            print(f"   📂 載入已保存的進度: {len(slides)} 張簡報")
+            return slides
+        except Exception as e:
+            print(f"   ⚠️ 載入進度失敗: {e}")
+            return []
+
     def transcribe_audio_with_timestamps(self):
         """使用 Whisper 轉換語音為文字，包含時間戳"""
         print("🎤 分析語音內容...")
+        
+        # 檢查記憶體
+        self.check_memory_usage()
         
         # 使用 Whisper 轉錄音頻
         result = self.whisper_model.transcribe(
@@ -75,21 +157,131 @@ class AILectureCreator:
                 'words': segment.get('words', [])
             })
         
-        total_duration = result.get('duration', librosa.get_duration(filename=self.audio_path))
+        total_duration = result.get('duration', librosa.get_duration(path=self.audio_path))
         
         print(f"   ✅ 語音轉錄完成，共 {len(segments)} 個片段")
         print(f"   📝 轉錄內容預覽: {result['text'][:100]}...")
         
+        # 清理 Whisper 模型記憶體
+        del result
+        gc.collect()
+        
         return {
             'segments': segments,
-            'full_text': result['text'],
+            'full_text': ' '.join([seg['text'] for seg in segments]),
             'duration': total_duration
         }
     
+    def process_single_slide_ocr(self, slide_path, slide_index):
+        """處理單張簡報的 OCR"""
+        try:
+            print(f"      🔍 處理中: {slide_path.name}")
+            self.check_memory_usage()
+            
+            # 檢查圖片檔案是否存在且可讀取
+            if not slide_path.exists():
+                raise FileNotFoundError(f"圖片檔案不存在: {slide_path}")
+            
+            # 使用 PIL 處理圖片並最佳化記憶體使用
+            from PIL import Image
+            
+            # 初始化 OCR 讀取器（如果還沒初始化）
+            self.init_ocr_reader()
+            
+            extracted_text = ""
+            temp_path = None
+            
+            try:
+                with Image.open(slide_path) as img:
+                    # 轉換為 RGB 模式（如果需要）
+                    if img.mode != 'RGB':
+                        img = img.convert('RGB')
+                    
+                    # 大幅縮小圖片以節省記憶體，OCR 對小圖片也很有效
+                    max_size = 1200  # 降低到 1200 像素
+                    if img.width > max_size or img.height > max_size:
+                        img.thumbnail((max_size, max_size), Image.Resampling.LANCZOS)
+                    
+                    # 如果圖片還是很大，進一步縮小
+                    if img.width * img.height > 800000:  # 大於 800K 像素
+                        scale_factor = (800000 / (img.width * img.height)) ** 0.5
+                        new_width = int(img.width * scale_factor)
+                        new_height = int(img.height * scale_factor)
+                        img = img.resize((new_width, new_height), Image.Resampling.LANCZOS)
+                    
+                    # 保存暫存檔案
+                    temp_path = f"/tmp/ocr_temp_{slide_index}_{int(time.time())}.jpg"
+                    img.save(temp_path, "JPEG", quality=85, optimize=True)
+                
+                print(f"      📏 圖片大小: {img.width}x{img.height}")
+                
+                # 使用 EasyOCR 處理
+                result = self.ocr_reader.readtext(temp_path, paragraph=False, width_ths=0.9, height_ths=0.9)
+                
+                # 整理提取的文字
+                extracted_texts = []
+                for detection in result:
+                    if len(detection) >= 3:
+                        bbox, text, confidence = detection
+                        if confidence > 0.4:  # 降低信心度門檻
+                            cleaned_text = text.strip()
+                            if len(cleaned_text) > 1:  # 過濾單字符
+                                extracted_texts.append(cleaned_text)
+                
+                extracted_text = ' '.join(extracted_texts)
+                
+                # 清理暫存檔案
+                if temp_path and Path(temp_path).exists():
+                    Path(temp_path).unlink()
+                
+                # 強制垃圾回收
+                del result
+                gc.collect()
+                
+                return {
+                    'slide_index': slide_index,
+                    'slide_path': slide_path,
+                    'slide_name': slide_path.name,
+                    'extracted_text': extracted_text,
+                    'word_count': len(extracted_text.split()) if extracted_text else 0
+                }
+                
+            except Exception as ocr_error:
+                print(f"      ❌ OCR 處理失敗: {ocr_error}")
+                return {
+                    'slide_index': slide_index,
+                    'slide_path': slide_path,
+                    'slide_name': slide_path.name,
+                    'extracted_text': '',
+                    'word_count': 0
+                }
+            finally:
+                # 確保清理暫存檔案
+                if temp_path and Path(temp_path).exists():
+                    try:
+                        Path(temp_path).unlink()
+                    except:
+                        pass
+                
+        except Exception as e:
+            print(f"      ❌ 處理簡報失敗: {e}")
+            return {
+                'slide_index': slide_index,
+                'slide_path': slide_path,
+                'slide_name': slide_path.name,
+                'extracted_text': '',
+                'word_count': 0
+            }
+    
     def extract_text_from_slides(self):
-        """使用 OCR 提取簡報文字"""
+        """使用 OCR 提取簡報文字 - 最佳化記憶體版本"""
         print("🔍 分析簡報內容...")
         
+        # 載入已保存的進度
+        slides_content = self.load_ocr_progress()
+        processed_files = {slide['slide_name'] for slide in slides_content}
+        
+        # 獲取所有簡報檔案
         image_extensions = ["*.jpg", "*.jpeg", "*.png", "*.JPG", "*.JPEG", "*.PNG"]
         slides = []
         for ext in image_extensions:
@@ -97,81 +289,72 @@ class AILectureCreator:
         
         slides.sort(key=lambda x: x.name)
         
-        slides_content = []
-        for i, slide_path in enumerate(slides):
-            print(f"   📄 分析簡報 {i+1}/{len(slides)}: {slide_path.name}")
+        # 過濾已處理的檔案
+        remaining_slides = [s for s in slides if s.name not in processed_files]
+        
+        if processed_files:
+            print(f"   📂 跳過已處理的 {len(processed_files)} 張簡報")
+        
+        if not remaining_slides:
+            print("   ✅ 所有簡報已處理完成")
+            return slides_content
+        
+        print(f"   📄 需要處理 {len(remaining_slides)} 張簡報")
+        
+        # 逐一處理剩餘的簡報
+        for i, slide_path in enumerate(remaining_slides):
+            current_index = len(slides_content)  # 使用當前進度作為索引
+            print(f"   📄 分析簡報 {i+1}/{len(remaining_slides)}: {slide_path.name}")
             
             try:
-                # 檢查圖片檔案是否存在且可讀取
-                if not slide_path.exists():
-                    raise FileNotFoundError(f"圖片檔案不存在: {slide_path}")
+                # 處理單張簡報
+                slide_result = self.process_single_slide_ocr(slide_path, current_index)
+                slides_content.append(slide_result)
                 
-                # 先用 Pillow 檢查圖片是否可以正常載入
-                from PIL import Image
-                with Image.open(slide_path) as img:
-                    # 如果圖片太大，先縮小以節省記憶體
-                    if img.width > 2000 or img.height > 2000:
-                        img.thumbnail((2000, 2000), Image.Resampling.LANCZOS)
-                        temp_path = f"/tmp/resized_{slide_path.name}"
-                        img.save(temp_path)
-                        ocr_path = temp_path
-                    else:
-                        ocr_path = str(slide_path)
+                # 顯示結果
+                if slide_result['extracted_text']:
+                    print(f"      ✅ 提取文字: {slide_result['extracted_text'][:80]}...")
+                else:
+                    print(f"      ⚠️ 未檢測到文字")
                 
-                print(f"      正在進行 OCR 分析...")
+                # 每處理完一張就保存進度
+                self.save_ocr_progress(slides_content)
                 
-                # 使用 EasyOCR 提取文字，加上記憶體和錯誤處理
-                try:
-                    result = self.ocr_reader.readtext(ocr_path, paragraph=False)
-                    
-                    # 整理提取的文字
-                    extracted_text = []
-                    for detection in result:
-                        if len(detection) >= 3:  # 確保有信心度
-                            bbox, text, confidence = detection
-                            if confidence > 0.5:  # 只保留信心度高的文字
-                                extracted_text.append(text.strip())
-                    
-                    slide_text = ' '.join(extracted_text)
-                    
-                    # 清理暫存檔案
-                    if 'temp_path' in locals() and Path(temp_path).exists():
-                        Path(temp_path).unlink()
-                        
-                except Exception as ocr_error:
-                    print(f"      ⚠️ OCR 處理失敗: {ocr_error}")
-                    slide_text = ""
+                # 記憶體檢查和清理
+                if (i + 1) % 2 == 0:  # 每處理 2 張圖片就檢查一次記憶體
+                    self.check_memory_usage()
+                    time.sleep(0.5)  # 稍微暫停讓系統呼吸
                 
-                slides_content.append({
-                    'slide_index': i,
-                    'slide_path': slide_path,
-                    'slide_name': slide_path.name,
-                    'extracted_text': slide_text,
-                    'word_count': len(slide_text.split()) if slide_text else 0
-                })
-                
-                print(f"      提取文字: {slide_text[:80]}..." if slide_text else "      未檢測到文字")
-                
+            except MemoryError as e:
+                print(f"      ❌ 記憶體不足: {e}")
+                print(f"      💾 已保存進度到第 {len(slides_content)} 張")
+                raise e
             except Exception as e:
-                print(f"      ⚠️ 處理簡報失敗: {e}")
-                import traceback
-                print(f"      錯誤詳情: {traceback.format_exc()}")
-                
+                print(f"      ❌ 處理失敗: {e}")
+                # 添加空結果以維持索引一致性
                 slides_content.append({
-                    'slide_index': i,
+                    'slide_index': current_index,
                     'slide_path': slide_path,
                     'slide_name': slide_path.name,
                     'extracted_text': '',
                     'word_count': 0
                 })
-                
-                # 如果是記憶體錯誤，嘗試釋放記憶體
-                if "memory" in str(e).lower() or "oom" in str(e).lower():
-                    print(f"      🔄 偵測到記憶體問題，嘗試釋放記憶體...")
-                    import gc
-                    gc.collect()
+                continue
         
         print(f"   ✅ 簡報分析完成，共 {len(slides_content)} 張")
+        
+        # 清理進度檔案
+        if self.progress_file.exists():
+            self.progress_file.unlink()
+            print("   🗑️ 清理進度檔案")
+        
+        # 清理 OCR 讀取器以釋放記憶體
+        if self.ocr_reader is not None:
+            del self.ocr_reader
+            self.ocr_reader = None
+            gc.collect()
+            print("   🧹 清理 OCR 讀取器記憶體")
+        
         return slides_content
     
     def ai_content_matching(self, speech_data, slides_data):
@@ -535,9 +718,23 @@ class AILectureCreator:
         print(f"📊 匹配報告已儲存至: {report_path}")
 
 def main():
-    """主函數"""
-    print("🧠 AI 智慧課程影片生成系統")
+    """主函數 - EC2 最佳化版本"""
+    print("🧠 AI 智慧課程影片生成系統 (EC2 最佳化版)")
     print("=" * 60)
+    
+    # 設定 matplotlib 後端以避免 GUI 錯誤
+    import matplotlib
+    matplotlib.use('Agg')
+    
+    # 檢查系統資源
+    try:
+        import psutil
+        memory_info = psutil.virtual_memory()
+        print(f"💾 系統記憶體: {memory_info.total/(1024**3):.1f}GB (可用: {memory_info.available/(1024**3):.1f}GB)")
+        if memory_info.available < 1024**3:  # 少於 1GB
+            print("⚠️  記憶體可能不足，建議監控記憶體使用情況")
+    except ImportError:
+        print("⚠️  未安裝 psutil，無法監控記憶體使用")
     
     # 設定檔案路徑
     audio_path = "audio.mp3"
@@ -553,18 +750,29 @@ def main():
         print(f"❌ 找不到簡報資料夾: {slides_folder}")
         return
     
+    # 檢查簡報數量
+    image_extensions = ["*.jpg", "*.jpeg", "*.png", "*.JPG", "*.JPEG", "*.PNG"]
+    slides = []
+    for ext in image_extensions:
+        slides.extend(Path(slides_folder).glob(ext))
+    print(f"📄 發現 {len(slides)} 張簡報")
+    
     # 檢查 .env 檔案和 API Key
     if not os.path.exists('.env'):
         print("⚠️  提示: 未找到 .env 檔案，將建立範例檔案")
         with open('.env', 'w', encoding='utf-8') as f:
-            f.write("# AI 智慧課程影片生成系統設定檔\n")
+            f.write("# AI 智慧課程影片生成系統設定檔 - EC2 最佳化版\n")
             f.write("# 請將 your-api-key-here 替換為你的實際 Anthropic API Key\n\n")
             f.write("ANTHROPIC_API_KEY=your-api-key-here\n")
-            f.write("\n# 可選設定\n")
-            f.write("# WHISPER_MODEL=base\n")
-            f.write("# OCR_LANGUAGES=ch_tra,en\n")
-            f.write("# VIDEO_FPS=25\n")
+            f.write("\n# EC2 最佳化設定\n")
+            f.write("WHISPER_MODEL=base\n")
+            f.write("OCR_LANGUAGES=ch_tra,en\n")
+            f.write("VIDEO_FPS=25\n")
+            f.write("MEMORY_LIMIT_GB=1.5\n")
+            f.write("OCR_BATCH_SIZE=1\n")
+            f.write("USE_GPU=false\n")
         print("   ✅ 已建立 .env 檔案，請編輯並設定你的 API Key")
+        print("   💡 可參考 env_example.txt 檔案了解完整設定選項")
     
     api_key = os.getenv('ANTHROPIC_API_KEY')
     if not api_key or api_key == 'your-api-key-here':
@@ -575,6 +783,14 @@ def main():
     try:
         creator = AILectureCreator(audio_path, slides_folder, output_path)
         print("✅ AI 影片生成器初始化成功")
+        
+        # 顯示當前設定
+        print(f"🔧 當前設定:")
+        print(f"   • Whisper 模型: {os.getenv('WHISPER_MODEL', 'base')}")
+        print(f"   • OCR 語言: {os.getenv('OCR_LANGUAGES', 'ch_tra,en')}")
+        print(f"   • 記憶體限制: {os.getenv('MEMORY_LIMIT_GB', '2.0')}GB")
+        print(f"   • 批處理大小: {os.getenv('OCR_BATCH_SIZE', '1')}")
+        
     except Exception as e:
         print(f"❌ 初始化 AI 影片生成器失敗: {e}")
         import traceback
@@ -585,22 +801,36 @@ def main():
     # 生成影片
     try:
         print("🚀 開始生成影片...")
+        start_time = time.time()
+        
         creator.generate_smart_video()
+        
+        end_time = time.time()
+        duration = end_time - start_time
         print(f"\n🎉 成功！你的 AI 智慧影片已儲存為: {output_path}")
+        print(f"⏱️  總處理時間: {duration/60:.1f} 分鐘")
         print("\n🚀 系統特色:")
         print("   • 使用 Whisper 進行精確語音識別")
         print("   • 使用 OCR 提取簡報文字內容")
         print("   • 使用 Claude AI 分析語意相關性進行智慧匹配")
         print("   • 自動合併連續相同簡報片段")
         print("   • 生成詳細的匹配分析報告")
+        print("   • EC2 記憶體最佳化處理")
+        print("   • 支援程式中斷後恢復進度")
         
     except KeyboardInterrupt:
         print("\n⚠️  使用者中斷處理")
-    except MemoryError:
-        print("❌ 記憶體不足！請嘗試:")
-        print("   • 縮小簡報圖片尺寸")
-        print("   • 減少簡報數量")
-        print("   • 增加系統記憶體")
+        print("💾 已保存的進度檔案: ocr_progress.json")
+        print("🔄 下次執行時將自動恢復進度")
+    except MemoryError as e:
+        print(f"❌ 記憶體不足: {e}")
+        print("💡 建議的解決方案:")
+        print("   • 縮小簡報圖片尺寸 (建議 < 1MB)")
+        print("   • 減少簡報數量 (分批處理)")
+        print("   • 升級到更大記憶體的 EC2 實例")
+        print("   • 調整 .env 中的 MEMORY_LIMIT_GB 設定")
+        print("   • 設定 WHISPER_MODEL=tiny 使用更小的模型")
+        print("💾 已保存的進度檔案: ocr_progress.json")
     except Exception as e:
         print(f"❌ 生成影片時發生錯誤: {e}")
         import traceback
@@ -620,11 +850,20 @@ def main():
             
             with open(error_log_path, 'w', encoding='utf-8') as f:
                 f.write(f"錯誤時間: {datetime.now().isoformat()}\n")
-                f.write(f"錯誤訊息: {e}\n")
+                f.write(f"系統資訊:\n")
+                try:
+                    memory_info = psutil.virtual_memory()
+                    f.write(f"  總記憶體: {memory_info.total/(1024**3):.1f}GB\n")
+                    f.write(f"  可用記憶體: {memory_info.available/(1024**3):.1f}GB\n")
+                    f.write(f"  使用率: {memory_info.percent}%\n")
+                except:
+                    f.write("  無法獲取記憶體資訊\n")
+                f.write(f"\n錯誤訊息: {e}\n")
                 f.write("詳細錯誤資訊:\n")
                 f.write(traceback.format_exc())
             
             print(f"📝 錯誤日誌已儲存至: {error_log_path}")
+            print("💾 已保存的進度檔案: ocr_progress.json")
         except:
             pass
 
