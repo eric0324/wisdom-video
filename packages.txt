@@ -1,6 +1,1 @@
-ffmpeg
-libsm6
-libxext6
-libfontconfig1
-libxrender1
-libgomp1 
+# 暫時移除所有系統依賴進行測試 
