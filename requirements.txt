@@ -1,4 +1,6 @@
 streamlit>=1.28.0
 anthropic>=0.34.0
 Pillow>=10.0.0
-python-dotenv>=1.0.0 
+python-dotenv>=1.0.0
+numpy>=1.21.0,<2.0.0
+tqdm>=4.65.0 
