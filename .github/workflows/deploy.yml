@@ -53,7 +53,7 @@ jobs:
           
           echo '⚙️ Creating .env file...'
           echo '# AI 智慧課程影片生成系統環境變數' > .env
-          echo 'ANTHROPIC_API_KEY='\${ANTHROPIC_API_KEY:-your-api-key-here} >> .env
+          echo 'ANTHROPIC_API_KEY=${{ secrets.ANTHROPIC_API_KEY }}' >> .env
           echo 'WHISPER_MODEL=base' >> .env
           echo 'OCR_LANGUAGES=ch_tra,en' >> .env
           echo 'VIDEO_FPS=25' >> .env
