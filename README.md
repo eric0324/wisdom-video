@@ -1,4 +1,4 @@
-# 🎬 AI 智能課程影片生成系統
+# 🎬 AI 智慧課程影片生成系統
 
 ## 📁 項目結構
 ```
@@ -6,11 +6,11 @@ wisdom-video/
 ├── streamlit_app.py          # 主應用程式
 ├── ai_smart_lecture_creator.py  # AI 核心功能
 ├── requirements.txt          # Python 依賴
-├── Dockerfile               # Docker 鏡像構建
-├── docker-compose.yml       # Docker 編排配置  
-├── .dockerignore           # Docker 構建優化
+├── Dockerfile               # Docker 鏡像建立
+├── docker-compose.yml       # Docker 編排設定  
+├── .dockerignore           # Docker 建立最佳化
 ├── quick_deploy.sh         # 一鍵部署腳本
-└── .streamlit/             # Streamlit 配置
+└── .streamlit/             # Streamlit 設定
     ├── config.toml
     └── secrets.toml
 ```

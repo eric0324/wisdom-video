@@ -1,0 +1,38 @@
+name: 🚀 Deploy to EC2
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:  # 允許手動觸發
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: 📥 Checkout code
+      uses: actions/checkout@v4
+      
+    - name: 🔐 Setup SSH
+      uses: webfactory/ssh-agent@v0.8.0
+      with:
+        ssh-private-key: ${{ secrets.EC2_SSH_KEY }}
+        
+    - name: 🚀 Deploy to EC2
+      run: |
+        ssh -o StrictHostKeyChecking=no ubuntu@${{ secrets.EC2_HOST }} '
+          cd ~/wisdom-video-app
+          git pull origin main
+          if git diff --name-only HEAD~1 HEAD | grep -E "(Dockerfile|docker-compose.yml|requirements.txt)"; then
+            echo "🔄 Rebuilding Docker images..."
+            docker-compose build --no-cache
+          fi
+          docker-compose up -d
+          echo "✅ Deployment completed!"
+        '
+        
+    - name: 🏥 Health Check
+      run: |
+        sleep 30
+        curl -f http://${{ secrets.EC2_HOST }}:8501/_stcore/health || exit 1
+        echo "✅ Health check passed!" 

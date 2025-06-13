@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-AI 智能課程影片生成系統 - Streamlit 前端介面
+AI 智慧課程影片生成系統 - Streamlit 前端介面
 讓使用者可以上傳簡報圖片和聲音檔案，生成課程影片
 """
 
@@ -136,7 +136,7 @@ def download_video(video_path, key="main_download"):
 def main():
     """主函數"""
     st.set_page_config(
-        page_title="AI 智能課程影片生成系統",
+        page_title="AI 智慧課程影片生成系統",
         page_icon="🎬",
         layout="wide",
         initial_sidebar_state="expanded"

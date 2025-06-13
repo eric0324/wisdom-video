@@ -1,5 +1,5 @@
 #!/bin/bash
-# 🚀 AI 智能課程影片生成系統 - 超級一鍵部署腳本
+# 🚀 AI 智慧課程影片生成系統 - 超級一鍵部署腳本
 # 支援 EC2, Google Cloud, Azure, 本地部署
 
 set -e  # 遇到錯誤立即停止
@@ -28,12 +28,12 @@ print_error() {
     echo -e "${RED}❌ $1${NC}"
 }
 
-# 配置變量 (請修改為您的 GitHub 倉庫)
+# 設定變量 (請修改為您的 GitHub 倉庫)
 GITHUB_REPO="https://github.com/eric0324/wisdom-video.git"
 APP_DIR="$HOME/wisdom-video-app"
 COMPOSE_FILE="docker-compose.yml"
 
-print_step "開始一鍵部署 AI 智能課程影片生成系統"
+print_step "開始一鍵部署 AI 智慧課程影片生成系統"
 
 # 檢查系統
 print_step "檢查系統環境..."
@@ -89,8 +89,8 @@ fi
 
 print_success "代碼拉取完成"
 
-# 配置環境變量
-print_step "配置環境變量..."
+# 設定環境變量
+print_step "設定環境變量..."
 if [ ! -f ".env" ]; then
     echo "# AI 課程影片生成系統環境變量" > .env
     echo "ANTHROPIC_API_KEY=your-api-key-here" >> .env
@@ -110,11 +110,11 @@ if [ ! -f ".env" ]; then
         print_success "API Key 已設置"
     fi
 else
-    print_success "環境配置文件已存在"
+    print_success "環境設定文件已存在"
 fi
 
-# 構建並啟動容器
-print_step "構建並啟動 Docker 容器..."
+# 建立並啟動容器
+print_step "建立並啟動 Docker 容器..."
 docker-compose build --no-cache
 docker-compose up -d
 

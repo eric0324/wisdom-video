@@ -18,37 +18,27 @@ from moviepy import (
 from datetime import datetime
 # from dotenv import load_dotenv  # 已移除 dotenv，改用 streamlit.secrets
 
-# 新增：自動偵測 streamlit 並取得 secrets
+# 載入 .env 檔案
 try:
-    import streamlit as st
-    _ST_SECRETS = st.secrets if hasattr(st, 'secrets') else None
+    from dotenv import load_dotenv
+    load_dotenv()
 except ImportError:
-    _ST_SECRETS = None
-
-# 載入 .env 檔案（僅本地開發用）
-if not _ST_SECRETS:
-    try:
-        from dotenv import load_dotenv
-        load_dotenv()
-    except ImportError:
-        pass
+    pass
 
 class AILectureCreator:
     def __init__(self, audio_path, slides_folder, output_path="ai_lecture_video.mp4"):
         self.audio_path = audio_path
         self.slides_folder = Path(slides_folder)
         self.output_path = output_path
-        # 優先從 streamlit secrets 讀取設定
-        self.fps = int(
-            (_ST_SECRETS.get('VIDEO_FPS') if _ST_SECRETS else os.getenv('VIDEO_FPS', '25'))
-        )
+        # 從環境變量讀取設定
+        self.fps = int(os.getenv('VIDEO_FPS', '25'))
         
         # 初始化 Whisper 和 OCR
         print("🔧 初始化 AI 模組...")
         
-        # 從 secrets 或 .env 讀取設定
-        whisper_model_name = (_ST_SECRETS.get('WHISPER_MODEL') if _ST_SECRETS else os.getenv('WHISPER_MODEL', 'base'))
-        ocr_languages = (_ST_SECRETS.get('OCR_LANGUAGES') if _ST_SECRETS else os.getenv('OCR_LANGUAGES', 'ch_tra,en'))
+        # 從環境變量讀取設定
+        whisper_model_name = os.getenv('WHISPER_MODEL', 'base')
+        ocr_languages = os.getenv('OCR_LANGUAGES', 'ch_tra,en')
         ocr_languages = ocr_languages.split(',') if isinstance(ocr_languages, str) else list(ocr_languages)
         
         self.whisper_model = whisper.load_model(whisper_model_name)
@@ -56,13 +46,13 @@ class AILectureCreator:
         
         # Claude (Anthropic) API 設定
         self.claude_client = None
-        api_key = (_ST_SECRETS.get('ANTHROPIC_API_KEY') if _ST_SECRETS else os.getenv('ANTHROPIC_API_KEY'))
+        api_key = os.getenv('ANTHROPIC_API_KEY')
         if api_key and api_key != 'your-api-key-here':
             self.claude_client = anthropic.Anthropic(api_key=api_key)
-            print("   ✅ Claude API 已從 secrets/.env 載入")
+            print("   ✅ Claude API 已從 .env 載入")
         else:
             print("   ⚠️ 未設定有效的 ANTHROPIC_API_KEY，將使用本地匹配算法")
-            print("   💡 請在 Streamlit Secrets 或 .env 檔案設定你的 Anthropic API Key")
+            print("   💡 請在 .env 檔案設定你的 Anthropic API Key")
     
     def transcribe_audio_with_timestamps(self):
         """使用 Whisper 轉換語音為文字，包含時間戳"""
