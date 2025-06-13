@@ -6,10 +6,12 @@ services:
     ports:
       - "8501:8501"
     environment:
-      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-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}
       - WHISPER_MODEL=${WHISPER_MODEL:-base}
       - OCR_LANGUAGES=${OCR_LANGUAGES:-ch_tra,en}
       - VIDEO_FPS=${VIDEO_FPS:-25}
+    env_file:
+      - .env
     volumes:
       - ./output_videos:/app/output_videos
       - ./logs:/app/logs

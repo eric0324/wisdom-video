@@ -13,8 +13,16 @@ import shutil
 from pathlib import Path
 import time
 from datetime import datetime
-from ai_smart_lecture_creator import AILectureCreator
 import mimetypes
+
+# 載入環境變量
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
+
+from ai_smart_lecture_creator import AILectureCreator
 
 def init_session_state():
     """初始化 session state"""
