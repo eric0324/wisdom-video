@@ -62,6 +62,12 @@ jobs:
           echo '📋 .env file contents:'
           cat .env
           
+          echo '🛑 Stopping existing containers...'
+          docker-compose down --remove-orphans 2>/dev/null || echo 'ℹ️  No existing containers to stop'
+          
+          echo '🧹 Cleaning up Docker resources...'
+          docker system prune -f 2>/dev/null || echo 'ℹ️  Docker cleanup completed'
+          
           if git diff --name-only HEAD~1 HEAD | grep -E '(Dockerfile|docker-compose.yml|requirements.txt)'; then
             echo '🔄 Rebuilding Docker images...'
             docker-compose build --no-cache || { echo '❌ Docker build failed'; exit 1; }
@@ -71,6 +77,11 @@ jobs:
           
           echo '🐳 Starting services...'
           docker-compose up -d || { echo '❌ Docker compose up failed'; exit 1; }
+          
+          echo '📊 Checking container status...'
+          sleep 5
+          docker-compose ps
+          
           echo '✅ Deployment completed!'
         "
       env:
