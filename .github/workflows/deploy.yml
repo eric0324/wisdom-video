@@ -17,24 +17,46 @@ jobs:
       uses: shimataro/ssh-key-action@v2
       with:
         key: ${{ secrets.EC2_SSH_KEY }}
-        known_hosts: ${{ secrets.EC2_HOST }}
+        known_hosts: unnecessary
         if_key_exists: replace
+        
+    - name: 🔍 Debug SSH Setup
+      run: |
+        echo "🔍 Checking SSH key setup..."
+        ls -la ~/.ssh/
+        ssh-keygen -lf ~/.ssh/id_rsa || echo "❌ SSH key validation failed"
         
     - name: 🚀 Deploy to EC2
       run: |
-        ssh -o StrictHostKeyChecking=no ubuntu@${{ secrets.EC2_HOST }} '
-          cd ~/wisdom-video-app
-          git pull origin main
+        echo "🚀 Starting deployment to EC2..."
+        ssh -v -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null ubuntu@${{ secrets.EC2_HOST }} '
+          echo "✅ SSH connection successful!"
+          cd ~/wisdom-video-app || { echo "❌ Directory not found"; exit 1; }
+          echo "📁 Current directory: $(pwd)"
+          
+          echo "🔄 Pulling latest changes..."
+          git pull origin main || { echo "❌ Git pull failed"; exit 1; }
+          
           if git diff --name-only HEAD~1 HEAD | grep -E "(Dockerfile|docker-compose.yml|requirements.txt)"; then
             echo "🔄 Rebuilding Docker images..."
-            docker-compose build --no-cache
+            docker-compose build --no-cache || { echo "❌ Docker build failed"; exit 1; }
+          else
+            echo "ℹ️  No rebuild needed"
           fi
-          docker-compose up -d
+          
+          echo "🐳 Starting services..."
+          docker-compose up -d || { echo "❌ Docker compose up failed"; exit 1; }
           echo "✅ Deployment completed!"
         '
         
     - name: 🏥 Health Check
       run: |
+        echo "⏳ Waiting for services to start..."
         sleep 30
-        curl -f http://${{ secrets.EC2_HOST }}:8501/_stcore/health || exit 1
-        echo "✅ Health check passed!" 
+        echo "🏥 Performing health check..."
+        if curl -f http://${{ secrets.EC2_HOST }}:8501/_stcore/health; then
+          echo "✅ Health check passed!"
+        else
+          echo "❌ Health check failed!"
+          exit 1
+        fi 
