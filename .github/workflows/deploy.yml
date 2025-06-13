@@ -65,8 +65,22 @@ jobs:
           echo '🛑 Stopping existing containers...'
           docker-compose down --remove-orphans 2>/dev/null || echo 'ℹ️  No existing containers to stop'
           
-          echo '🧹 Cleaning up Docker resources...'
+          echo '🔍 Checking for processes using port 8501...'
+          if sudo lsof -t -i:8501 >/dev/null 2>&1; then
+            echo '⚠️  Found processes using port 8501, terminating...'
+            sudo lsof -t -i:8501 | xargs -r sudo kill -9
+            sleep 2
+          else
+            echo 'ℹ️  No processes found using port 8501'
+          fi
+          
+          echo '🧹 Force cleaning all Docker containers and networks...'
+          docker container ls -aq | xargs -r docker container rm -f 2>/dev/null || echo 'ℹ️  No containers to remove'
+          docker network ls --filter name=wisdom-video -q | xargs -r docker network rm 2>/dev/null || echo 'ℹ️  No networks to remove'
           docker system prune -f 2>/dev/null || echo 'ℹ️  Docker cleanup completed'
+          
+          echo '⏳ Waiting for port to be fully released...'
+          sleep 5
           
           if git diff --name-only HEAD~1 HEAD | grep -E '(Dockerfile|docker-compose.yml|requirements.txt)'; then
             echo '🔄 Rebuilding Docker images...'
