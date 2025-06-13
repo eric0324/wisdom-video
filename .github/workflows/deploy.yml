@@ -33,14 +33,14 @@ jobs:
           echo "✅ SSH connection successful!"
           
           # 檢查項目目錄是否存在
-          if [ -d "~/wisdom-video" ]; then
+          if [ -d "/home/ubuntu/wisdom-video" ]; then
             echo "📁 Found existing project directory"
-            PROJECT_DIR="~/wisdom-video"
+            PROJECT_DIR="/home/ubuntu/wisdom-video"
           else
             echo "🔍 Project directory not found, cloning repository..."
-            cd ~
+            cd /home/ubuntu
             git clone https://github.com/${{ github.repository }}.git wisdom-video || { echo "❌ Git clone failed"; exit 1; }
-            PROJECT_DIR="~/wisdom-video"
+            PROJECT_DIR="/home/ubuntu/wisdom-video"
             echo "✅ Repository cloned successfully"
           fi
           
