@@ -29,7 +29,7 @@ print_error() {
 }
 
 # 配置變量 (請修改為您的 GitHub 倉庫)
-GITHUB_REPO="https://github.com/YOUR_ACTUAL_USERNAME/wisdom-video.git"  # 請替換 YOUR_ACTUAL_USERNAME
+GITHUB_REPO="https://github.com/eric0324/wisdom-video.git"
 APP_DIR="$HOME/wisdom-video-app"
 COMPOSE_FILE="docker-compose.yml"
 
