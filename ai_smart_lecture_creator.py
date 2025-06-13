@@ -102,16 +102,45 @@ class AILectureCreator:
             print(f"   📄 分析簡報 {i+1}/{len(slides)}: {slide_path.name}")
             
             try:
-                # 使用 EasyOCR 提取文字
-                result = self.ocr_reader.readtext(str(slide_path))
+                # 檢查圖片檔案是否存在且可讀取
+                if not slide_path.exists():
+                    raise FileNotFoundError(f"圖片檔案不存在: {slide_path}")
                 
-                # 整理提取的文字
-                extracted_text = []
-                for (bbox, text, confidence) in result:
-                    if confidence > 0.5:  # 只保留信心度高的文字
-                        extracted_text.append(text.strip())
+                # 先用 Pillow 檢查圖片是否可以正常載入
+                from PIL import Image
+                with Image.open(slide_path) as img:
+                    # 如果圖片太大，先縮小以節省記憶體
+                    if img.width > 2000 or img.height > 2000:
+                        img.thumbnail((2000, 2000), Image.Resampling.LANCZOS)
+                        temp_path = f"/tmp/resized_{slide_path.name}"
+                        img.save(temp_path)
+                        ocr_path = temp_path
+                    else:
+                        ocr_path = str(slide_path)
                 
-                slide_text = ' '.join(extracted_text)
+                print(f"      正在進行 OCR 分析...")
+                
+                # 使用 EasyOCR 提取文字，加上記憶體和錯誤處理
+                try:
+                    result = self.ocr_reader.readtext(ocr_path, paragraph=False)
+                    
+                    # 整理提取的文字
+                    extracted_text = []
+                    for detection in result:
+                        if len(detection) >= 3:  # 確保有信心度
+                            bbox, text, confidence = detection
+                            if confidence > 0.5:  # 只保留信心度高的文字
+                                extracted_text.append(text.strip())
+                    
+                    slide_text = ' '.join(extracted_text)
+                    
+                    # 清理暫存檔案
+                    if 'temp_path' in locals() and Path(temp_path).exists():
+                        Path(temp_path).unlink()
+                        
+                except Exception as ocr_error:
+                    print(f"      ⚠️ OCR 處理失敗: {ocr_error}")
+                    slide_text = ""
                 
                 slides_content.append({
                     'slide_index': i,
@@ -124,7 +153,10 @@ class AILectureCreator:
                 print(f"      提取文字: {slide_text[:80]}..." if slide_text else "      未檢測到文字")
                 
             except Exception as e:
-                print(f"      ⚠️ 處理失敗: {e}")
+                print(f"      ⚠️ 處理簡報失敗: {e}")
+                import traceback
+                print(f"      錯誤詳情: {traceback.format_exc()}")
+                
                 slides_content.append({
                     'slide_index': i,
                     'slide_path': slide_path,
@@ -132,6 +164,12 @@ class AILectureCreator:
                     'extracted_text': '',
                     'word_count': 0
                 })
+                
+                # 如果是記憶體錯誤，嘗試釋放記憶體
+                if "memory" in str(e).lower() or "oom" in str(e).lower():
+                    print(f"      🔄 偵測到記憶體問題，嘗試釋放記憶體...")
+                    import gc
+                    gc.collect()
         
         print(f"   ✅ 簡報分析完成，共 {len(slides_content)} 張")
         return slides_content
@@ -534,10 +572,19 @@ def main():
         print("   編輯 .env 檔案並將 'your-api-key-here' 替換為實際的 API Key")
     
     # 建立 AI 影片生成器
-    creator = AILectureCreator(audio_path, slides_folder, output_path)
+    try:
+        creator = AILectureCreator(audio_path, slides_folder, output_path)
+        print("✅ AI 影片生成器初始化成功")
+    except Exception as e:
+        print(f"❌ 初始化 AI 影片生成器失敗: {e}")
+        import traceback
+        print("詳細錯誤資訊:")
+        traceback.print_exc()
+        return
     
     # 生成影片
     try:
+        print("🚀 開始生成影片...")
         creator.generate_smart_video()
         print(f"\n🎉 成功！你的 AI 智慧影片已儲存為: {output_path}")
         print("\n🚀 系統特色:")
@@ -547,10 +594,39 @@ def main():
         print("   • 自動合併連續相同簡報片段")
         print("   • 生成詳細的匹配分析報告")
         
+    except KeyboardInterrupt:
+        print("\n⚠️  使用者中斷處理")
+    except MemoryError:
+        print("❌ 記憶體不足！請嘗試:")
+        print("   • 縮小簡報圖片尺寸")
+        print("   • 減少簡報數量")
+        print("   • 增加系統記憶體")
     except Exception as e:
         print(f"❌ 生成影片時發生錯誤: {e}")
         import traceback
+        print("詳細錯誤資訊:")
         traceback.print_exc()
+        
+        # 保存錯誤日誌
+        try:
+            from datetime import datetime
+            from pathlib import Path
+            
+            logs_dir = Path("logs")
+            logs_dir.mkdir(parents=True, exist_ok=True)
+            
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            error_log_path = logs_dir / f"error_log_{timestamp}.txt"
+            
+            with open(error_log_path, 'w', encoding='utf-8') as f:
+                f.write(f"錯誤時間: {datetime.now().isoformat()}\n")
+                f.write(f"錯誤訊息: {e}\n")
+                f.write("詳細錯誤資訊:\n")
+                f.write(traceback.format_exc())
+            
+            print(f"📝 錯誤日誌已儲存至: {error_log_path}")
+        except:
+            pass
 
 if __name__ == "__main__":
     main() 

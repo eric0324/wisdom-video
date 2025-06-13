@@ -19,6 +19,11 @@ RUN apt-get update && apt-get install -y \
     tesseract-ocr-chi-tra \
     tesseract-ocr-eng \
     libgl1-mesa-glx \
+    libjpeg-dev \
+    libpng-dev \
+    libtiff-dev \
+    libopencv-dev \
+    python3-opencv \
     && rm -rf /var/lib/apt/lists/*
 
 # 複製 requirements.txt
