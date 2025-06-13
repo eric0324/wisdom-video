@@ -1,0 +1,12 @@
+.git
+.gitignore
+__pycache__/
+*.pyc
+.env
+.venv
+venv/
+logs/
+output_videos/
+*.log
+.DS_Store
+README.md 

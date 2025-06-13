@@ -13,7 +13,7 @@ import shutil
 from pathlib import Path
 import time
 from datetime import datetime
-# from ai_smart_lecture_creator import AILectureCreator  # 暫時註釋
+from ai_smart_lecture_creator import AILectureCreator
 import mimetypes
 
 def init_session_state():
@@ -96,19 +96,25 @@ def save_uploaded_files(audio_file, image_files, temp_dir):
         return None, None
 
 def generate_video(audio_path, slides_dir, output_dir):
-    """生成影片 - 暫時模擬功能"""
+    """生成影片"""
     try:
-        # 暫時返回示例視頻路徑，實際不生成
-        st.info("🚧 影片生成功能暫時關閉，正在測試部署...")
-        st.info("📁 已接收文件:")
-        st.info(f"   - 音頻: {os.path.basename(audio_path)}")
-        st.info(f"   - 簡報: {len(os.listdir(slides_dir))} 張")
+        output_path = os.path.join(output_dir, f"lecture_video_{datetime.now().strftime('%Y%m%d_%H%M%S')}.mp4")
         
-        # 暫時返回 None 表示未實際生成
-        return None
+        # 創建 AI 課程生成器
+        creator = AILectureCreator(
+            audio_path=audio_path,
+            slides_folder=slides_dir,
+            output_path=output_path
+        )
+        
+        # 執行影片生成
+        with st.spinner('正在生成影片，請稍候...'):
+            creator.generate_smart_video()
+        
+        return output_path if os.path.exists(output_path) else None
         
     except Exception as e:
-        st.error(f"處理文件時發生錯誤: {str(e)}")
+        st.error(f"生成影片時發生錯誤: {str(e)}")
         return None
 
 def download_video(video_path, key="main_download"):
