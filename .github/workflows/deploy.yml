@@ -31,7 +31,31 @@ jobs:
         echo "🚀 Starting deployment to EC2..."
         ssh -v -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null ubuntu@${{ secrets.EC2_HOST }} '
           echo "✅ SSH connection successful!"
-          cd ~/wisdom-video-app || { echo "❌ Directory not found"; exit 1; }
+          
+          echo "🔍 Checking possible directories..."
+          echo "Home directory contents:"
+          ls -la ~/
+          echo "Root directory contents:"
+          ls -la /
+          
+          # 檢查可能的路徑
+          if [ -d "~/wisdom-video-app" ]; then
+            PROJECT_DIR="~/wisdom-video-app"
+          elif [ -d "~/wisdom-video" ]; then
+            PROJECT_DIR="~/wisdom-video"
+          elif [ -d "/wisdom-video-app" ]; then
+            PROJECT_DIR="/wisdom-video-app"
+          elif [ -d "/wisdom-video" ]; then
+            PROJECT_DIR="/wisdom-video"
+          else
+            echo "❌ Project directory not found in common locations"
+            echo "Available directories in home:"
+            find ~ -maxdepth 2 -type d -name "*wisdom*" || echo "No wisdom directories found"
+            exit 1
+          fi
+          
+          echo "📁 Using project directory: $PROJECT_DIR"
+          cd "$PROJECT_DIR" || { echo "❌ Cannot access directory: $PROJECT_DIR"; exit 1; }
           echo "📁 Current directory: $(pwd)"
           
           echo "🔄 Pulling latest changes..."
