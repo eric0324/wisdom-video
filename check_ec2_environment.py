@@ -177,7 +177,7 @@ def provide_recommendations():
             print("🔧 記憶體最佳化建議:")
             print("   • 使用 WHISPER_MODEL=tiny 以節省記憶體")
             print("   • 設定 MEMORY_LIMIT_GB=1.0")
-            print("   • 考慮升級到 t2.small 或更大的實例")
+            print("   • 考慮升級到 t2.small 或更大的實例(建議4GB以上)")
             
         if memory.total < 4*1024**3:  # 少於 4GB
             print("🔧 一般建議:")
