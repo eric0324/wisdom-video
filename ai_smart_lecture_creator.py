@@ -2,12 +2,13 @@
 # -*- coding: utf-8 -*-
 """
 AI 智慧課程影片生成系統
-使用語音識別 + OCR + AI 分析進行內容匹配
+使用語音識別 + PDF文字分析 + AI 分析進行內容匹配
+完全基於PDF，自動提取頁面圖片
 """
 
 import librosa
 import whisper
-import easyocr
+import pdfplumber
 import anthropic
 import json
 import os
@@ -19,6 +20,8 @@ from moviepy import (
     ImageClip, AudioFileClip, CompositeVideoClip
 )
 from datetime import datetime
+import fitz  # PyMuPDF for PDF to image conversion
+from PIL import Image
 # from dotenv import load_dotenv  # 已移除 dotenv，改用 streamlit.secrets
 
 # 載入 .env 檔案
@@ -29,9 +32,9 @@ except ImportError:
     pass
 
 class AILectureCreator:
-    def __init__(self, audio_path, slides_folder, output_path="ai_lecture_video.mp4"):
+    def __init__(self, audio_path, pdf_path, output_path="ai_lecture_video.mp4"):
         self.audio_path = audio_path
-        self.slides_folder = Path(slides_folder)
+        self.pdf_path = Path(pdf_path)
         self.output_path = output_path
         # 從環境變量讀取設定
         self.fps = int(os.getenv('VIDEO_FPS', '25'))
@@ -39,24 +42,21 @@ class AILectureCreator:
         # 記憶體監控
         self.memory_limit_gb = float(os.getenv('MEMORY_LIMIT_GB', '2.0'))  # 預設 2GB 記憶體限制
         
-        # OCR 批處理設定
-        self.batch_size = int(os.getenv('OCR_BATCH_SIZE', '1'))  # 一次處理一張圖片
-        
         # 進度保存路徑
-        self.progress_file = Path("ocr_progress.json")
+        self.progress_file = Path("pdf_progress.json")
         
-        # 初始化 Whisper 和 OCR
+        # 創建臨時圖片目錄
+        self.temp_images_dir = Path("temp_pdf_images")
+        self.temp_images_dir.mkdir(exist_ok=True)
+        
+        # 初始化 AI 模組
         print("🔧 初始化 AI 模組...")
         
         # 從環境變量讀取設定
         whisper_model_name = os.getenv('WHISPER_MODEL', 'base')
-        ocr_languages = os.getenv('OCR_LANGUAGES', 'ch_tra,en')
-        ocr_languages = ocr_languages.split(',') if isinstance(ocr_languages, str) else list(ocr_languages)
         
-        # 延遲初始化 OCR，避免預先佔用記憶體
+        # 初始化 Whisper
         self.whisper_model = whisper.load_model(whisper_model_name)
-        self.ocr_reader = None  # 延遲初始化
-        self.ocr_languages = ocr_languages
         
         # Claude (Anthropic) API 設定
         self.claude_client = None
@@ -87,33 +87,19 @@ class AILectureCreator:
             if available_gb < 0.3:  # 還是不夠
                 raise MemoryError(f"記憶體不足！可用記憶體: {available_gb:.1f}GB")
     
-    def init_ocr_reader(self):
-        """延遲初始化 OCR 讀取器"""
-        if self.ocr_reader is None:
-            print("   🔍 初始化 OCR 讀取器...")
-            self.check_memory_usage()
-            self.ocr_reader = easyocr.Reader(self.ocr_languages, gpu=False)  # 強制使用 CPU
-            print("   ✅ OCR 讀取器初始化完成")
-    
-    def save_ocr_progress(self, processed_slides):
-        """保存 OCR 進度"""
+    def save_pdf_progress(self, processed_pages):
+        """保存 PDF 處理進度"""
         progress_data = {
             'timestamp': datetime.now().isoformat(),
-            'processed_count': len(processed_slides),
-            'slides': []
+            'processed_count': len(processed_pages),
+            'pages': processed_pages
         }
-        
-        for slide in processed_slides:
-            # 轉換 Path 對象為字串以便 JSON 序列化
-            slide_data = slide.copy()
-            slide_data['slide_path'] = str(slide_data['slide_path'])
-            progress_data['slides'].append(slide_data)
         
         with open(self.progress_file, 'w', encoding='utf-8') as f:
             json.dump(progress_data, f, ensure_ascii=False, indent=2)
     
-    def load_ocr_progress(self):
-        """載入已保存的 OCR 進度"""
+    def load_pdf_progress(self):
+        """載入已保存的 PDF 處理進度"""
         if not self.progress_file.exists():
             return []
         
@@ -121,14 +107,9 @@ class AILectureCreator:
             with open(self.progress_file, 'r', encoding='utf-8') as f:
                 progress_data = json.load(f)
             
-            # 轉換回 Path 對象
-            slides = []
-            for slide in progress_data.get('slides', []):
-                slide['slide_path'] = Path(slide['slide_path'])
-                slides.append(slide)
-            
-            print(f"   📂 載入已保存的進度: {len(slides)} 張簡報")
-            return slides
+            pages = progress_data.get('pages', [])
+            print(f"   📂 載入已保存的進度: {len(pages)} 頁")
+            return pages
         except Exception as e:
             print(f"   ⚠️ 載入進度失敗: {e}")
             return []
@@ -172,190 +153,150 @@ class AILectureCreator:
             'duration': total_duration
         }
     
-    def process_single_slide_ocr(self, slide_path, slide_index):
-        """處理單張簡報的 OCR"""
-        try:
-            print(f"      🔍 處理中: {slide_path.name}")
-            self.check_memory_usage()
-            
-            # 檢查圖片檔案是否存在且可讀取
-            if not slide_path.exists():
-                raise FileNotFoundError(f"圖片檔案不存在: {slide_path}")
-            
-            # 使用 PIL 處理圖片並最佳化記憶體使用
-            from PIL import Image
-            
-            # 初始化 OCR 讀取器（如果還沒初始化）
-            self.init_ocr_reader()
-            
-            extracted_text = ""
-            temp_path = None
-            
-            try:
-                with Image.open(slide_path) as img:
-                    # 轉換為 RGB 模式（如果需要）
-                    if img.mode != 'RGB':
-                        img = img.convert('RGB')
-                    
-                    # 大幅縮小圖片以節省記憶體，OCR 對小圖片也很有效
-                    max_size = 1200  # 降低到 1200 像素
-                    if img.width > max_size or img.height > max_size:
-                        img.thumbnail((max_size, max_size), Image.Resampling.LANCZOS)
-                    
-                    # 如果圖片還是很大，進一步縮小
-                    if img.width * img.height > 800000:  # 大於 800K 像素
-                        scale_factor = (800000 / (img.width * img.height)) ** 0.5
-                        new_width = int(img.width * scale_factor)
-                        new_height = int(img.height * scale_factor)
-                        img = img.resize((new_width, new_height), Image.Resampling.LANCZOS)
-                    
-                    # 保存暫存檔案
-                    temp_path = f"/tmp/ocr_temp_{slide_index}_{int(time.time())}.jpg"
-                    img.save(temp_path, "JPEG", quality=85, optimize=True)
-                
-                print(f"      📏 圖片大小: {img.width}x{img.height}")
-                
-                # 使用 EasyOCR 處理
-                result = self.ocr_reader.readtext(temp_path, paragraph=False, width_ths=0.9, height_ths=0.9)
-                
-                # 整理提取的文字
-                extracted_texts = []
-                for detection in result:
-                    if len(detection) >= 3:
-                        bbox, text, confidence = detection
-                        if confidence > 0.4:  # 降低信心度門檻
-                            cleaned_text = text.strip()
-                            if len(cleaned_text) > 1:  # 過濾單字符
-                                extracted_texts.append(cleaned_text)
-                
-                extracted_text = ' '.join(extracted_texts)
-                
-                # 清理暫存檔案
-                if temp_path and Path(temp_path).exists():
-                    Path(temp_path).unlink()
-                
-                # 強制垃圾回收
-                del result
-                gc.collect()
-                
-                return {
-                    'slide_index': slide_index,
-                    'slide_path': slide_path,
-                    'slide_name': slide_path.name,
-                    'extracted_text': extracted_text,
-                    'word_count': len(extracted_text.split()) if extracted_text else 0
-                }
-                
-            except Exception as ocr_error:
-                print(f"      ❌ OCR 處理失敗: {ocr_error}")
-                return {
-                    'slide_index': slide_index,
-                    'slide_path': slide_path,
-                    'slide_name': slide_path.name,
-                    'extracted_text': '',
-                    'word_count': 0
-                }
-            finally:
-                # 確保清理暫存檔案
-                if temp_path and Path(temp_path).exists():
-                    try:
-                        Path(temp_path).unlink()
-                    except:
-                        pass
-                
-        except Exception as e:
-            print(f"      ❌ 處理簡報失敗: {e}")
-            return {
-                'slide_index': slide_index,
-                'slide_path': slide_path,
-                'slide_name': slide_path.name,
-                'extracted_text': '',
-                'word_count': 0
-            }
-    
-    def extract_text_from_slides(self):
-        """使用 OCR 提取簡報文字 - 最佳化記憶體版本"""
-        print("🔍 分析簡報內容...")
+    def extract_text_from_pdf(self):
+        """從PDF中提取每頁的文字內容"""
+        print("📄 分析PDF內容...")
         
         # 載入已保存的進度
-        slides_content = self.load_ocr_progress()
-        processed_files = {slide['slide_name'] for slide in slides_content}
+        pdf_pages = self.load_pdf_progress()
         
-        # 獲取所有簡報檔案
-        image_extensions = ["*.jpg", "*.jpeg", "*.png", "*.JPG", "*.JPEG", "*.PNG"]
-        slides = []
-        for ext in image_extensions:
-            slides.extend(self.slides_folder.glob(ext))
+        if pdf_pages:
+            print(f"   📂 使用已保存的進度資料: {len(pdf_pages)} 頁")
+            return pdf_pages
         
-        slides.sort(key=lambda x: x.name)
+        # 檢查PDF檔案是否存在
+        if not self.pdf_path.exists():
+            raise FileNotFoundError(f"PDF檔案不存在: {self.pdf_path}")
         
-        # 過濾已處理的檔案
-        remaining_slides = [s for s in slides if s.name not in processed_files]
+        print(f"   📖 讀取PDF檔案: {self.pdf_path.name}")
         
-        if processed_files:
-            print(f"   📂 跳過已處理的 {len(processed_files)} 張簡報")
+        try:
+            with pdfplumber.open(self.pdf_path) as pdf:
+                total_pages = len(pdf.pages)
+                print(f"   📄 PDF總頁數: {total_pages}")
+                
+                pdf_pages = []
+                
+                for page_index, page in enumerate(pdf.pages):
+                    print(f"   📄 處理第 {page_index + 1}/{total_pages} 頁")
+                    
+                    try:
+                        # 提取文字
+                        extracted_text = page.extract_text() or ""
+                        
+                        # 清理文字
+                        cleaned_text = ' '.join(extracted_text.split())
+                        
+                        page_data = {
+                            'page_index': page_index,
+                            'page_number': page_index + 1,
+                            'extracted_text': cleaned_text,
+                            'word_count': len(cleaned_text.split()) if cleaned_text else 0
+                        }
+                        
+                        pdf_pages.append(page_data)
+                        
+                        if cleaned_text:
+                            print(f"      ✅ 提取文字: {cleaned_text[:80]}...")
+                        else:
+                            print(f"      ⚠️ 該頁未檢測到文字")
+                        
+                        # 每處理5頁保存一次進度
+                        if (page_index + 1) % 5 == 0:
+                            self.save_pdf_progress(pdf_pages)
+                            self.check_memory_usage()
+                        
+                    except Exception as e:
+                        print(f"      ❌ 處理第 {page_index + 1} 頁失敗: {e}")
+                        # 添加空結果以維持索引一致性
+                        pdf_pages.append({
+                            'page_index': page_index,
+                            'page_number': page_index + 1,
+                            'extracted_text': '',
+                            'word_count': 0
+                        })
+                        continue
+                
+                print(f"   ✅ PDF文字提取完成，共 {len(pdf_pages)} 頁")
+                
+                # 保存最終進度
+                self.save_pdf_progress(pdf_pages)
+                
+                return pdf_pages
+                
+        except Exception as e:
+            print(f"   ❌ PDF處理失敗: {e}")
+            raise e
+    
+    def convert_pdf_to_images(self, pdf_pages_data):
+        """將PDF每頁轉換為圖片"""
+        print("🖼️ 轉換PDF頁面為圖片...")
         
-        if not remaining_slides:
-            print("   ✅ 所有簡報已處理完成")
-            return slides_content
+        # 清理舊的臨時圖片
+        for old_img in self.temp_images_dir.glob("*.png"):
+            old_img.unlink()
         
-        print(f"   📄 需要處理 {len(remaining_slides)} 張簡報")
+        slides_data = []
         
-        # 逐一處理剩餘的簡報
-        for i, slide_path in enumerate(remaining_slides):
-            current_index = len(slides_content)  # 使用當前進度作為索引
-            print(f"   📄 分析簡報 {i+1}/{len(remaining_slides)}: {slide_path.name}")
+        try:
+            # 使用 PyMuPDF 打開PDF
+            pdf_document = fitz.open(self.pdf_path)
+            total_pages = len(pdf_document)
             
-            try:
-                # 處理單張簡報
-                slide_result = self.process_single_slide_ocr(slide_path, current_index)
-                slides_content.append(slide_result)
-                
-                # 顯示結果
-                if slide_result['extracted_text']:
-                    print(f"      ✅ 提取文字: {slide_result['extracted_text'][:80]}...")
-                else:
-                    print(f"      ⚠️ 未檢測到文字")
-                
-                # 每處理完一張就保存進度
-                self.save_ocr_progress(slides_content)
-                
-                # 記憶體檢查和清理
-                if (i + 1) % 2 == 0:  # 每處理 2 張圖片就檢查一次記憶體
-                    self.check_memory_usage()
-                    time.sleep(0.5)  # 稍微暫停讓系統呼吸
-                
-            except MemoryError as e:
-                print(f"      ❌ 記憶體不足: {e}")
-                print(f"      💾 已保存進度到第 {len(slides_content)} 張")
-                raise e
-            except Exception as e:
-                print(f"      ❌ 處理失敗: {e}")
-                # 添加空結果以維持索引一致性
-                slides_content.append({
-                    'slide_index': current_index,
-                    'slide_path': slide_path,
-                    'slide_name': slide_path.name,
-                    'extracted_text': '',
-                    'word_count': 0
-                })
-                continue
-        
-        print(f"   ✅ 簡報分析完成，共 {len(slides_content)} 張")
-        
-        # 清理進度檔案
-        if self.progress_file.exists():
-            self.progress_file.unlink()
-            print("   🗑️ 清理進度檔案")
-        
-        # 清理 OCR 讀取器以釋放記憶體
-        if self.ocr_reader is not None:
-            del self.ocr_reader
-            self.ocr_reader = None
-            gc.collect()
-            print("   🧹 清理 OCR 讀取器記憶體")
-        
-        return slides_content
+            print(f"   🔄 轉換 {total_pages} 頁PDF為圖片...")
+            
+            for page_index in range(total_pages):
+                try:
+                    print(f"   📄 轉換第 {page_index + 1}/{total_pages} 頁")
+                    
+                    # 獲取頁面
+                    page = pdf_document[page_index]
+                    
+                    # 設定較高的解析度以獲得更好的圖片品質
+                    mat = fitz.Matrix(2.0, 2.0)  # 2倍放大
+                    pix = page.get_pixmap(matrix=mat)
+                    
+                    # 保存為圖片
+                    image_path = self.temp_images_dir / f"slide_{page_index+1:03d}.png"
+                    pix.save(str(image_path))
+                    
+                    # 獲取對應的文字內容
+                    page_text = ""
+                    if page_index < len(pdf_pages_data):
+                        page_text = pdf_pages_data[page_index]['extracted_text']
+                    
+                    slide_data = {
+                        'slide_index': page_index,
+                        'slide_path': image_path,
+                        'slide_name': image_path.name,
+                        'pdf_page_index': page_index,
+                        'pdf_page_number': page_index + 1,
+                        'extracted_text': page_text,
+                        'word_count': len(page_text.split()) if page_text else 0
+                    }
+                    
+                    slides_data.append(slide_data)
+                    
+                    print(f"      ✅ 已轉換: {image_path.name}")
+                    
+                    # 記憶體管理
+                    pix = None
+                    if (page_index + 1) % 5 == 0:
+                        self.check_memory_usage()
+                        gc.collect()
+                    
+                except Exception as e:
+                    print(f"      ❌ 轉換第 {page_index + 1} 頁失敗: {e}")
+                    continue
+            
+            pdf_document.close()
+            print(f"   ✅ PDF轉圖片完成，共 {len(slides_data)} 張圖片")
+            
+            return slides_data
+            
+        except Exception as e:
+            print(f"   ❌ PDF轉圖片失敗: {e}")
+            raise e
     
     def ai_content_matching(self, speech_data, slides_data):
         """使用 AI 分析語音和簡報內容的匹配關係"""
@@ -458,6 +399,11 @@ class AILectureCreator:
                 timing_data = json.loads(json_content)
                 slide_timings = timing_data.get('slide_timings', [])
                 
+                if not slide_timings:
+                    raise ValueError("JSON中未找到 'slide_timings' 資料")
+                
+                print(f"   📊 成功解析 {len(slide_timings)} 個簡報時間安排")
+                
                 # 轉換為原來的 matches 格式以保持兼容性
                 matches = []
                 total_duration = speech_data['duration']
@@ -465,7 +411,18 @@ class AILectureCreator:
                 for timing in slide_timings:
                     slide_index = timing['slide_index']
                     start_time = timing['start_time']
-                    end_time = min(timing['end_time'], total_duration)  # 確保不超過音頻長度
+                    
+                    # 處理Claude回應中可能的欄位名稱錯誤
+                    if 'end_time' in timing:
+                        end_time = timing['end_time']
+                    elif 'end' in timing:
+                        end_time = timing['end']
+                        print(f"   ⚠️ 修正簡報 {slide_index} 的欄位名稱: 'end' → 'end_time'")
+                    else:
+                        print(f"   ❌ 簡報 {slide_index} 缺少結束時間欄位")
+                        continue
+                    
+                    end_time = min(end_time, total_duration)  # 確保不超過音頻長度
                     
                     # 找到這個時間範圍內的語音片段
                     segments_in_range = [
@@ -629,31 +586,34 @@ class AILectureCreator:
         # 1. 語音轉文字
         speech_data = self.transcribe_audio_with_timestamps()
         
-        # 2. 簡報文字提取
-        slides_data = self.extract_text_from_slides()
+        # 2. PDF文字提取
+        pdf_pages = self.extract_text_from_pdf()
+        
+        # 3. 將PDF轉換為圖片
+        slides_data = self.convert_pdf_to_images(pdf_pages)
         
         if not slides_data:
             print("❌ 沒有找到簡報！")
             return
         
-        # 3. AI 內容匹配
+        # 4. AI 內容匹配
         matches = self.ai_content_matching(speech_data, slides_data)
         
         if not matches:
             print("❌ 無法生成內容匹配！")
             return
         
-        # 4. 建立時間軸
+        # 5. 建立時間軸
         timeline = self.create_timeline_from_matches(matches, slides_data)
         
-        # 5. 生成影片片段
+        # 6. 生成影片片段
         video_clips = self.create_video_clips(timeline)
         
         if not video_clips:
             print("❌ 無法建立影片片段！")
             return
         
-        # 6. 合成最終影片
+        # 7. 合成最終影片
         print("🎬 合併影片...")
         audio_clip = AudioFileClip(self.audio_path)
         
@@ -664,7 +624,7 @@ class AILectureCreator:
         final_video = final_video.with_audio(audio_clip)
         final_video = final_video.with_duration(video_duration)
         
-        # 7. 輸出影片
+        # 8. 輸出影片
         print(f"💾 正在儲存影片到 {self.output_path}...")
         final_video.write_videofile(
             self.output_path,
@@ -675,7 +635,7 @@ class AILectureCreator:
         
         print("✅ AI 智慧影片生成完成！")
         
-        # 8. 生成匹配報告
+        # 9. 生成匹配報告
         self.generate_matching_report(matches, timeline)
         
         # 清理記憶體
@@ -683,6 +643,24 @@ class AILectureCreator:
         audio_clip.close()
         for clip in video_clips:
             clip.close()
+        
+        # 清理臨時圖片檔案
+        self.cleanup_temp_files()
+    
+    def cleanup_temp_files(self):
+        """清理臨時圖片檔案"""
+        try:
+            if self.temp_images_dir.exists():
+                for temp_file in self.temp_images_dir.glob("*.png"):
+                    temp_file.unlink()
+                print(f"   🗑️ 清理臨時圖片檔案")
+        except Exception as e:
+            print(f"   ⚠️ 清理臨時檔案失敗: {e}")
+        
+        # 清理PDF進度檔案
+        if self.progress_file.exists():
+            self.progress_file.unlink()
+            print("   🗑️ 清理PDF進度檔案")
     
     def generate_matching_report(self, matches, timeline):
         """生成內容匹配報告"""
@@ -738,7 +716,7 @@ def main():
     
     # 設定檔案路徑
     audio_path = "audio.mp3"
-    slides_folder = "images"
+    pdf_path = "presentation.pdf"
     output_path = "ai_lecture_video.mp4"
     
     # 檢查檔案
@@ -746,16 +724,9 @@ def main():
         print(f"❌ 找不到音頻檔案: {audio_path}")
         return
     
-    if not os.path.exists(slides_folder):
-        print(f"❌ 找不到簡報資料夾: {slides_folder}")
+    if not os.path.exists(pdf_path):
+        print(f"❌ 找不到簡報檔案: {pdf_path}")
         return
-    
-    # 檢查簡報數量
-    image_extensions = ["*.jpg", "*.jpeg", "*.png", "*.JPG", "*.JPEG", "*.PNG"]
-    slides = []
-    for ext in image_extensions:
-        slides.extend(Path(slides_folder).glob(ext))
-    print(f"📄 發現 {len(slides)} 張簡報")
     
     # 檢查 .env 檔案和 API Key
     if not os.path.exists('.env'):
@@ -766,11 +737,8 @@ def main():
             f.write("ANTHROPIC_API_KEY=your-api-key-here\n")
             f.write("\n# EC2 最佳化設定\n")
             f.write("WHISPER_MODEL=base\n")
-            f.write("OCR_LANGUAGES=ch_tra,en\n")
             f.write("VIDEO_FPS=25\n")
             f.write("MEMORY_LIMIT_GB=1.5\n")
-            f.write("OCR_BATCH_SIZE=1\n")
-            f.write("USE_GPU=false\n")
         print("   ✅ 已建立 .env 檔案，請編輯並設定你的 API Key")
         print("   💡 可參考 env_example.txt 檔案了解完整設定選項")
     
@@ -781,16 +749,12 @@ def main():
     
     # 建立 AI 影片生成器
     try:
-        creator = AILectureCreator(audio_path, slides_folder, output_path)
+        creator = AILectureCreator(audio_path, pdf_path, output_path)
         print("✅ AI 影片生成器初始化成功")
         
         # 顯示當前設定
         print(f"🔧 當前設定:")
         print(f"   • Whisper 模型: {os.getenv('WHISPER_MODEL', 'base')}")
-        print(f"   • OCR 語言: {os.getenv('OCR_LANGUAGES', 'ch_tra,en')}")
-        print(f"   • 記憶體限制: {os.getenv('MEMORY_LIMIT_GB', '2.0')}GB")
-        print(f"   • 批處理大小: {os.getenv('OCR_BATCH_SIZE', '1')}")
-        
     except Exception as e:
         print(f"❌ 初始化 AI 影片生成器失敗: {e}")
         import traceback
@@ -811,7 +775,7 @@ def main():
         print(f"⏱️  總處理時間: {duration/60:.1f} 分鐘")
         print("\n🚀 系統特色:")
         print("   • 使用 Whisper 進行精確語音識別")
-        print("   • 使用 OCR 提取簡報文字內容")
+        print("   • 使用 PDF 文字分析提取簡報文字內容")
         print("   • 使用 Claude AI 分析語意相關性進行智慧匹配")
         print("   • 自動合併連續相同簡報片段")
         print("   • 生成詳細的匹配分析報告")
@@ -820,7 +784,7 @@ def main():
         
     except KeyboardInterrupt:
         print("\n⚠️  使用者中斷處理")
-        print("💾 已保存的進度檔案: ocr_progress.json")
+        print("💾 已保存的進度檔案: pdf_progress.json")
         print("🔄 下次執行時將自動恢復進度")
     except MemoryError as e:
         print(f"❌ 記憶體不足: {e}")
@@ -830,7 +794,7 @@ def main():
         print("   • 升級到更大記憶體的 EC2 實例")
         print("   • 調整 .env 中的 MEMORY_LIMIT_GB 設定")
         print("   • 設定 WHISPER_MODEL=tiny 使用更小的模型")
-        print("💾 已保存的進度檔案: ocr_progress.json")
+        print("💾 已保存的進度檔案: pdf_progress.json")
     except Exception as e:
         print(f"❌ 生成影片時發生錯誤: {e}")
         import traceback
@@ -863,7 +827,7 @@ def main():
                 f.write(traceback.format_exc())
             
             print(f"📝 錯誤日誌已儲存至: {error_log_path}")
-            print("💾 已保存的進度檔案: ocr_progress.json")
+            print("💾 已保存的進度檔案: pdf_progress.json")
         except:
             pass
 
