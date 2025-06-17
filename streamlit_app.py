@@ -59,9 +59,9 @@ def validate_pdf_file(uploaded_file):
     if uploaded_file is None:
         return False, "請上傳PDF簡報檔案"
     
-    # 檢查檔案大小 (限制 50MB)
-    if uploaded_file.size > 50 * 1024 * 1024:
-        return False, "PDF檔案太大，請上傳小於 50MB 的檔案"
+    # 檢查檔案大小 (限制 1GB)
+    if uploaded_file.size > 1 * 1024 * 1024 * 1024:
+        return False, "PDF檔案太大，請上傳小於 1GB 的檔案"
     
     # 檢查檔案類型
     if uploaded_file.type != 'application/pdf':
@@ -191,7 +191,7 @@ def main():
         pdf_file = st.file_uploader(
             "選擇簡報PDF檔案",
             type=['pdf'],
-            help="請上傳包含文字內容的PDF檔案，系統會自動提取每頁作為投影片。檔案大小限制 50MB"
+            help="請上傳包含文字內容的PDF檔案，系統會自動提取每頁作為投影片。檔案大小限制 1GB"
         )
         
         if pdf_file:

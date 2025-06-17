@@ -1,0 +1,150 @@
+name: 📦 Build and Release
+
+on:
+  push:
+    tags:
+      - 'v*'  # 當推送 tag 時觸發（例如 v1.0.0）
+  workflow_dispatch:  # 允許手動觸發
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: 📥 Checkout code
+      uses: actions/checkout@v4
+      
+    - name: 🐍 Setup Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+        
+    - name: 📦 Install dependencies
+      run: |
+        echo "📦 安裝相依套件..."
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        pip install pyinstaller
+        
+    - name: 🔧 Build application
+      run: |
+        echo "🔧 開始打包應用程式..."
+        python build.py
+        
+    - name: 📋 Create release assets
+      run: |
+        echo "📋 準備發布檔案..."
+        
+        # 創建發布目錄
+        mkdir -p release
+        
+        # 複製可執行檔案
+        if [ -f "dist/AI智慧課程系統" ]; then
+          cp "dist/AI智慧課程系統" release/
+        fi
+        
+        # 複製使用說明
+        if [ -f "dist/使用說明.txt" ]; then
+          cp "dist/使用說明.txt" release/
+        fi
+        
+        # 創建 ZIP 檔案
+        cd release
+        zip -r ../wisdom-video-release.zip .
+        cd ..
+        
+        # 也創建 tar.gz 檔案
+        tar -czf wisdom-video-release.tar.gz -C release .
+        
+        echo "✅ 發布檔案準備完成"
+        ls -la *.zip *.tar.gz
+        
+    - name: 🔍 Extract version from tag
+      id: version
+      run: |
+        if [ "${{ github.ref_type }}" = "tag" ]; then
+          VERSION=${GITHUB_REF#refs/tags/}
+        else
+          VERSION="v$(date +%Y%m%d%H%M%S)"
+        fi
+        echo "version=$VERSION" >> $GITHUB_OUTPUT
+        echo "📌 版本號: $VERSION"
+        
+    - name: 📝 Generate release notes
+      id: release_notes
+      run: |
+        cat > release_notes.md << 'EOF'
+        ## AI 智慧課程影片生成系統 ${{ steps.version.outputs.version }}
+        
+        ### 🎬 主要功能
+        - 🎤 音頻轉文字（支援多語言）
+        - 📖 PDF 內容提取與解析
+        - 🤖 AI 智慧課程內容生成
+        - 🎥 自動影片製作與合成
+        
+        ### 📦 安裝說明
+        1. 下載對應您作業系統的發布檔案
+        2. 解壓縮檔案
+        3. 確保系統已安裝 Python 3.8+
+        4. 安裝必要套件：`pip install streamlit openai-whisper anthropic pdfplumber moviepy`
+        5. 執行可執行檔案或閱讀使用說明
+        
+        ### 💡 使用方法
+        - 雙擊可執行檔案啟動系統
+        - 瀏覽器會自動開啟應用程式介面
+        - 上傳音頻和 PDF 檔案
+        - 等待 AI 生成智慧課程影片
+        
+        ### ⚠️ 注意事項
+        - 首次使用需要網路連線下載 AI 模型
+        - 建議系統記憶體 > 4GB
+        - 確保有足夠的硬碟空間
+        
+        ---
+        
+        ### 📋 檔案說明
+        - `wisdom-video-release.zip` - 完整應用程式包（ZIP 格式）
+        - `wisdom-video-release.tar.gz` - 完整應用程式包（TAR.GZ 格式）
+        - `使用說明.txt` - 詳細使用說明文件
+        EOF
+        
+    - name: 🚀 Create Release
+      uses: actions/create-release@v1
+      id: create_release
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        tag_name: ${{ steps.version.outputs.version }}
+        release_name: AI 智慧課程系統 ${{ steps.version.outputs.version }}
+        body_path: release_notes.md
+        draft: false
+        prerelease: false
+        
+    - name: 📎 Upload ZIP Asset
+      uses: actions/upload-release-asset@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        upload_url: ${{ steps.create_release.outputs.upload_url }}
+        asset_path: ./wisdom-video-release.zip
+        asset_name: wisdom-video-${{ steps.version.outputs.version }}.zip
+        asset_content_type: application/zip
+        
+    - name: 📎 Upload TAR.GZ Asset
+      uses: actions/upload-release-asset@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        upload_url: ${{ steps.create_release.outputs.upload_url }}
+        asset_path: ./wisdom-video-release.tar.gz
+        asset_name: wisdom-video-${{ steps.version.outputs.version }}.tar.gz
+        asset_content_type: application/gzip
+        
+    - name: ✅ Release Summary
+      run: |
+        echo "🎉 發布完成！"
+        echo "📌 版本: ${{ steps.version.outputs.version }}"
+        echo "🔗 發布連結: ${{ steps.create_release.outputs.html_url }}"
+        echo "📦 已上傳檔案:"
+        echo "  - wisdom-video-${{ steps.version.outputs.version }}.zip"
+        echo "  - wisdom-video-${{ steps.version.outputs.version }}.tar.gz" 
